@@ -8,6 +8,7 @@
 mod config;
 mod model;
 mod processor;
+mod slicing;
 
 use anyhow::{Context, Result};
 use image::DynamicImage;
@@ -71,10 +72,12 @@ impl KoharuLayoutRFDetrSeg2XL {
         thresholds: KoharuLayoutThresholds,
     ) -> Result<KoharuLayoutDetections> {
         koharu_torch::no_grad(|| {
-            let pixel_values = self.processor.preprocess(image, self.device)?;
-            let output = self.model.forward(&pixel_values);
-            self.processor
-                .postprocess(&output, image.width(), image.height(), thresholds)
+            slicing::inference(image, |image| {
+                let pixel_values = self.processor.preprocess(image, self.device)?;
+                let output = self.model.forward(&pixel_values);
+                self.processor
+                    .postprocess(&output, image.width(), image.height(), thresholds)
+            })
         })
     }
 

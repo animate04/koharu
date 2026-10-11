@@ -44,6 +44,24 @@ Koharu introduces a local-first workflow for manga translation, utilizing the po
 - [Layered PSD export](https://koharu.rs/en/guides/export) for flattened delivery and layered editing
 - [Agent-based workflow](https://koharu.rs/en/agent/projects) for project inspection, editing, and pipeline control
 
+## Manhwa and manhua
+
+Import Korean manhwa and Chinese manhua as PNG, JPEG, WebP, CBZ/ZIP, RAR, or PDF.
+In **Settings → Pipeline**, choose **PaddleOCR-VL 1.6** or **Hayai OCR** for Korean
+and Chinese text; **Manga OCR** is Japanese-only. Select the translation model
+and target language in **Settings → Translation**.
+
+Long vertical pages use overlapping detection crops rather than shrinking the
+whole strip into one square. Cleanup mask expansion follows the crop scale,
+so a longer strip does not erase more artwork around the lettering. Multilingual
+OCR no longer labels unknown source text as Japanese.
+
+Imported images taller than 8,192 pixels become numbered PNG parts, in top-to-bottom
+order, to keep editing and export within the baseline texture height. The importer
+prefers uniform gutters near the cut; when none exists, a panel can span two parts.
+Every pixel is retained without overlap, and original files are never modified.
+Export produces one file per imported part.
+
 ## Hardware Acceleration
 
 Koharu supports CUDA and ROCm / HIP on Windows and Linux, Metal on Apple silicon, and Vulkan on Windows and Linux. Keep your graphics driver current; a full CUDA or ROCm SDK installation is not required. See [Runtime and hardware requirements](https://koharu.rs/en/hardware) for model-specific guidance.

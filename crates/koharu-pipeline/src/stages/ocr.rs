@@ -176,10 +176,8 @@ impl Model {
             edit.observe::<SourceText>(result.content)?;
         }
         for result in results {
-            let language = result
-                .previous
-                .and_then(|value| value.language)
-                .or_else(|| LanguageTag::new("ja-JP").ok());
+            let language =
+                source_language(result.previous.and_then(|value| value.language), model_name);
             edit.set(
                 result.content,
                 &SourceText {
@@ -205,6 +203,14 @@ impl Model {
         }
         finish(edit)
     }
+}
+
+fn source_language(previous: Option<LanguageTag>, model: &str) -> Option<LanguageTag> {
+    // Only Manga OCR is Japanese-only; the other recognizers are multilingual.
+    previous.or_else(|| match model {
+        "manga-ocr" => LanguageTag::new("ja-JP").ok(),
+        _ => None,
+    })
 }
 
 struct OcrTarget {
@@ -281,7 +287,31 @@ fn crop(source: &DynamicImage, geometry: &Geometry) -> Result<DynamicImage> {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_ocr_text;
+    use super::{LanguageTag, normalize_ocr_text, source_language};
+
+    #[test]
+    fn source_language_only_defaults_japanese_for_manga_ocr() {
+        assert_eq!(
+            source_language(None, "manga-ocr").unwrap().as_str(),
+            "ja-JP"
+        );
+        for model in ["baberu-ocr", "hayai-ocr", "paddleocr-vl-1.6"] {
+            assert_eq!(source_language(None, model), None);
+        }
+    }
+
+    #[test]
+    fn source_language_preserves_explicit_language_for_every_recognizer() {
+        for model in ["manga-ocr", "baberu-ocr", "hayai-ocr", "paddleocr-vl-1.6"] {
+            for language in ["ko-KR", "zh-CN", "zh-TW"] {
+                let language = LanguageTag::new(language).unwrap();
+                assert_eq!(
+                    source_language(Some(language.clone()), model),
+                    Some(language)
+                );
+            }
+        }
+    }
 
     #[test]
     fn repeated_placeholder_glyphs_are_an_ellipsis() {

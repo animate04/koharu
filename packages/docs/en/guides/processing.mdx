@@ -30,6 +30,10 @@ flowchart LR
 
 Detection creates regions and removal masks. OCR reads those regions. Translation writes target text. Inpainting reconstructs artwork under the lettering.
 
+Long vertical manhwa and manhua pages are detected in overlapping crops at source
+resolution. Detected regions and masks retain their page coordinates, while
+cleanup expansion uses the crop scale instead of the length of the whole strip.
+
 <Note>
   Omitted prerequisites are not added automatically. Include detection or OCR when a later stage
   needs fresh input. **Run Inpainting** means detection plus inpainting; it does not include OCR or

@@ -10,6 +10,7 @@ use image::{ImageFormat, ImageReader};
 use rayon::prelude::*;
 use strum::{EnumIter, EnumMessage, EnumString};
 
+mod long_strip;
 mod pdf;
 mod rar;
 mod zip;
@@ -46,7 +47,7 @@ pub(super) struct Page {
     pub(super) height: u32,
 }
 
-fn decode(path: &Path, source: EncodedPage) -> Result<Page> {
+fn decode(path: &Path, source: EncodedPage) -> Result<Vec<Page>> {
     let EncodedPage { name, bytes } = source;
     let format = image::guess_format(&bytes).with_context(|| {
         format!(
@@ -62,7 +63,7 @@ fn decode(path: &Path, source: EncodedPage) -> Result<Page> {
                 path.display()
             )
         })?;
-    Ok(Page {
+    long_strip::split(Page {
         name,
         bytes: Arc::<[u8]>::from(bytes),
         format,
@@ -98,8 +99,10 @@ pub(super) fn import(mut paths: Vec<PathBuf>) -> Result<Vec<Page>> {
             };
             encoded
                 .into_iter()
-                .map(|source| decode(&path, source))
-                .collect()
+                .try_fold(Vec::new(), |mut pages, source| {
+                    pages.extend(decode(&path, source)?);
+                    Ok(pages)
+                })
         })
         .collect::<Result<Vec<_>>>()?;
     let page_count = groups.iter().map(Vec::len).sum();

@@ -1374,9 +1374,7 @@ async fn write_mask(
     size: ImageSize,
 ) -> Result<()> {
     let mut mask = if size.width > 0 && size.height > 0 {
-        let radius = ((size.width.max(size.height) as f32 / 1024.0) * 6.0)
-            .round()
-            .clamp(1.0, 255.0) as u8;
+        let radius = text_mask_radius(size);
         closed_mask_for(detections, "text", size, radius)
     } else {
         mask_for(detections, "text", size)
@@ -1406,6 +1404,19 @@ async fn write_mask(
         ),
     )?;
     Ok(())
+}
+
+fn text_mask_radius(size: ImageSize) -> u8 {
+    // Long pages are detected in two-width crops; strip length must not enlarge
+    // the cleanup margin around the same-sized lettering.
+    let height = if u64::from(size.height) * 2 > u64::from(size.width) * 7 {
+        size.height.min(size.width.saturating_mul(2))
+    } else {
+        size.height
+    };
+    ((size.width.max(height) as f32 / 1024.0) * 6.0)
+        .round()
+        .clamp(1.0, 255.0) as u8
 }
 
 async fn preserve_mask_outside_region(
@@ -1848,8 +1859,36 @@ mod tests {
         ImageSize, KoharuLayoutRFDetrSeg2XLConfig, MaskPixel, PageRegions, Processor, RegionOutput,
         StageInput, StageProcessor, closed_mask_for, color_palette, generation, infer_typography,
         layout_order, link_dialogue_regions, mask_containment, mask_for, mask_geometry,
-        non_maximum_suppression, normalize_text_color, write_region,
+        non_maximum_suppression, normalize_text_color, text_mask_radius, write_region,
     };
+
+    #[test]
+    fn long_page_cleanup_margin_depends_on_crop_scale_not_strip_length() {
+        let normal = ImageSize {
+            width: 800,
+            height: 1600,
+        };
+        let strip = ImageSize {
+            width: 800,
+            height: 20000,
+        };
+        assert_eq!(text_mask_radius(normal), 9);
+        assert_eq!(text_mask_radius(strip), text_mask_radius(normal));
+        assert_eq!(
+            text_mask_radius(ImageSize {
+                width: 1024,
+                height: 4096
+            }),
+            12
+        );
+        assert_eq!(
+            text_mask_radius(ImageSize {
+                width: 1600,
+                height: 800
+            }),
+            9
+        );
+    }
 
     #[test]
     fn out_of_range_thresholds_fall_back_to_the_model_defaults() {

@@ -14,6 +14,11 @@ Text, bubble, and panel thresholds control how much evidence each class needs. L
 
 ## OCR
 
+For Korean manhwa and Chinese manhua, use **PaddleOCR-VL 1.6** or **Hayai OCR**.
+Translation can automatically detect the source language. Multilingual OCR leaves
+an unknown source language unset rather than assuming Japanese; an existing
+explicit language is preserved.
+
 | Processor        | Use                                               |
 | ---------------- | ------------------------------------------------- |
 | PaddleOCR-VL 1.6 | Default general vision-language OCR               |

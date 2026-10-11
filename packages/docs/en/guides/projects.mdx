@@ -42,11 +42,23 @@ Create, open, or delete projects here. Names must not contain path separators or
 
 | Source                            | Imported result                                                             |
 | --------------------------------- | --------------------------------------------------------------------------- |
-| PNG, JPEG (`.jpg`, `.jpeg`), WebP | One project page per image                                                  |
+| PNG, JPEG (`.jpg`, `.jpeg`), WebP | One project page per image, or numbered parts for images taller than 8,192 pixels |
 | CBZ, ZIP, RAR                     | One page per PNG, JPEG, or WebP entry; nested archives and PDFs are skipped |
 | PDF                               | One PNG rendered at 300 DPI per document page                               |
 
 Only the `.rar` extension is recognized for RAR archives; rename a `.cbr` file before importing it. Imported bytes are copied into content-addressed project storage. Moving or deleting an original source does not remove the imported page.
+
+## Manhwa, manhua, and long vertical pages
+
+Korean manhwa and Chinese manhua use the same import workflow. Choose **PaddleOCR-VL
+1.6** or **Hayai OCR** in **Settings → Pipeline**, then select your translation model
+and target language in **Settings → Translation**. Manga OCR is Japanese-only.
+
+Images taller than 8,192 pixels are split into lossless PNG parts in reading order.
+The importer looks for a uniform gutter near each cut; if no gutter is found, the
+height limit can divide a panel. No pixels are discarded or repeated. Original
+source files stay unchanged, and exports contain one file per part. These limits
+also apply to images inside archives and rendered PDF pages.
 
 ## Back up and restore
 

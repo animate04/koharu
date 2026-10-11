@@ -47,6 +47,7 @@ pub(super) struct Model {
     eos_token: LlamaToken,
     chat_template: ChatTemplate,
     llguidance_factory: OnceLock<std::result::Result<ParserFactory, String>>,
+    offload_auxiliary: bool,
 }
 
 impl Debug for Model {
@@ -138,9 +139,35 @@ impl Model {
         model_path: PathBuf,
         options: LoadOptions,
     ) -> Result<Self> {
+        let backend = crate::llama_backend().context("llama.cpp backend is not initialized")?;
+        let requested_layers = if backend.supports_gpu_offload() {
+            options.gpu_layers
+        } else {
+            0
+        };
+        load_with_ram_fallback(device, requested_layers, |device, gpu_layers| {
+            let mut options = options.clone();
+            options.gpu_layers = gpu_layers;
+            Self::load_once(
+                device,
+                model_path.clone(),
+                options,
+                gpu_layers == requested_layers,
+            )
+        })
+    }
+
+    fn load_once(
+        device: &crate::Device,
+        model_path: PathBuf,
+        options: LoadOptions,
+        offload_auxiliary: bool,
+    ) -> Result<Self> {
         ensure_file(&model_path, "GGUF model")?;
         let backend = crate::llama_backend().context("llama.cpp backend is not initialized")?;
         let params = model_params(backend, device, &options)?;
+        let use_gpu = params.n_gpu_layers() > 0;
+        let offload_auxiliary = use_gpu && offload_auxiliary;
         let model = LlamaModel::load_from_file(backend, &model_path, &params)
             .with_context(|| format!("failed to load GGUF model {}", model_path.display()))?;
         ensure!(
@@ -166,7 +193,7 @@ impl Model {
                     projector_path,
                     &model,
                     &MtmdContextParams {
-                        use_gpu: device.backend != Backend::Cpu && backend.supports_gpu_offload(),
+                        use_gpu: offload_auxiliary,
                         print_timings: false,
                         n_threads: available_threads(),
                         image_min_tokens: options.image_min_tokens,
@@ -195,6 +222,8 @@ impl Model {
             has_decoder = model.has_decoder(),
             vision = capabilities.vision,
             audio = capabilities.audio,
+            gpu_layers = params.n_gpu_layers(),
+            offload_auxiliary,
             "loaded llama.cpp model"
         );
         Ok(Self {
@@ -205,6 +234,7 @@ impl Model {
             eos_token,
             chat_template,
             llguidance_factory: OnceLock::new(),
+            offload_auxiliary,
         })
     }
 
@@ -255,7 +285,13 @@ impl Model {
             )
         };
         let prepared = self.prepare_prompt(input, options.add_special, mtmd.as_deref())?;
-        let context_config = context_config(&prepared, options)?;
+        let mut context_config = context_config(&prepared, options)?;
+        if !self.offload_auxiliary {
+            context_config.params = context_config
+                .params
+                .with_offload_kqv(false)
+                .with_op_offload(false);
+        }
         let mut context = self
             .model
             .new_context(self.backend, context_config.params)
@@ -602,6 +638,45 @@ struct ContextConfig {
     n_batch: u32,
 }
 
+fn load_with_ram_fallback<T>(
+    device: &crate::Device,
+    mut gpu_layers: u32,
+    mut load: impl FnMut(&crate::Device, u32) -> Result<T>,
+) -> Result<T> {
+    if device.backend == Backend::Cpu {
+        gpu_layers = 0;
+    }
+    let cpu = crate::Device::cpu();
+    let mut first_failure = None;
+    loop {
+        match load(if gpu_layers == 0 { &cpu } else { device }, gpu_layers) {
+            Err(error)
+                if gpu_layers > 0
+                    && (error.downcast_ref::<koharu_llama::LlamaModelLoadError>()
+                        == Some(&koharu_llama::LlamaModelLoadError::NullResult)
+                        || matches!(
+                            error.downcast_ref::<koharu_llama::mtmd::MtmdInitError>(),
+                            Some(koharu_llama::mtmd::MtmdInitError::NullResult)
+                        )) =>
+            {
+                // The default 1000 means all layers; cap the first retry to avoid many oversized loads.
+                gpu_layers = (gpu_layers / 2).min(32);
+                tracing::warn!(%error, gpu_layers, "retrying model load with fewer GPU layers and system RAM");
+                first_failure.get_or_insert_with(|| format!("{error:#}"));
+            }
+            Err(error) => {
+                return Err(match first_failure {
+                    Some(first) => error.context(format!(
+                        "GPU/RAM fallback failed after initial load failure: {first}"
+                    )),
+                    None => error,
+                });
+            }
+            Ok(model) => return Ok(model),
+        }
+    }
+}
+
 fn model_params(
     backend: &LlamaBackend,
     device: &crate::Device,
@@ -801,6 +876,121 @@ fn available_threads() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ram_fallback_keeps_gpu_layers_when_hybrid_load_fits() {
+        let mut attempts = Vec::new();
+        let result = load_with_ram_fallback(&crate::Device::cuda(0), 1000, |device, layers| {
+            attempts.push((device.backend.clone(), layers));
+            if layers > 16 {
+                Err(
+                    anyhow::Error::new(koharu_llama::LlamaModelLoadError::NullResult)
+                        .context("failed to load GGUF"),
+                )
+            } else {
+                Ok("loaded with GPU and RAM")
+            }
+        })
+        .unwrap();
+        assert_eq!(result, "loaded with GPU and RAM");
+        assert_eq!(
+            attempts,
+            [
+                (Backend::Cuda, 1000),
+                (Backend::Cuda, 32),
+                (Backend::Cuda, 16)
+            ]
+        );
+    }
+
+    #[test]
+    fn ram_fallback_does_not_retry_cpu_or_unrelated_failures() {
+        for (device, gpu_layers, native_failure) in [
+            (crate::Device::cpu(), 1000, true),
+            (crate::Device::cuda(0), 0, true),
+            (crate::Device::cuda(0), 1000, false),
+        ] {
+            let mut attempts = 0;
+            let result: Result<()> = load_with_ram_fallback(&device, gpu_layers, |_, _| {
+                attempts += 1;
+                if native_failure {
+                    Err(koharu_llama::LlamaModelLoadError::NullResult.into())
+                } else {
+                    bail!("invalid chat template")
+                }
+            });
+            assert!(result.is_err());
+            assert_eq!(attempts, 1);
+        }
+        let mut attempts = 0;
+        assert_eq!(
+            load_with_ram_fallback(&crate::Device::cuda(0), 1000, |_, layers| {
+                attempts += 1;
+                assert_eq!(layers, 1000);
+                Ok(42)
+            })
+            .unwrap(),
+            42
+        );
+        assert_eq!(attempts, 1);
+    }
+
+    #[test]
+    fn ram_fallback_preserves_errors_and_stops_when_cpu_fails() {
+        let mut attempts = 0;
+        let result: Result<()> =
+            load_with_ram_fallback(&crate::Device::cuda(0), 1, |device, layers| {
+                attempts += 1;
+                if layers > 0 {
+                    Err(
+                        anyhow::Error::new(koharu_llama::LlamaModelLoadError::NullResult)
+                            .context("GPU load failed"),
+                    )
+                } else {
+                    assert_eq!(device.backend, Backend::Cpu);
+                    bail!("system RAM exhausted")
+                }
+            });
+        let message = format!("{:#}", result.unwrap_err());
+        assert!(message.contains("GPU load failed"));
+        assert!(message.contains("system RAM exhausted"));
+        assert_eq!(attempts, 2);
+    }
+
+    #[test]
+    fn ram_fallback_reduces_layers_to_cpu_without_looping() {
+        let mut attempts = Vec::new();
+        load_with_ram_fallback(&crate::Device::cuda(2), 1000, |device, layers| {
+            attempts.push(layers);
+            if layers > 0 {
+                assert_eq!(device.index, 2);
+                Err(koharu_llama::LlamaModelLoadError::NullResult.into())
+            } else {
+                assert_eq!(device.backend, Backend::Cpu);
+                Ok(())
+            }
+        })
+        .unwrap();
+        assert_eq!(attempts, [1000, 32, 16, 8, 4, 2, 1, 0]);
+    }
+
+    #[test]
+    fn ram_fallback_recovers_from_projector_allocation_failure() {
+        let mut attempts = Vec::new();
+        load_with_ram_fallback(&crate::Device::cuda(0), 40, |_, layers| {
+            attempts.push(layers);
+            if layers == 40 {
+                Err(
+                    anyhow::Error::new(koharu_llama::mtmd::MtmdInitError::NullResult)
+                        .context("failed to initialize MTMD projector"),
+                )
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap();
+        assert_eq!(attempts, [40, 20]);
+    }
 
     fn prepared(tokens: usize, non_causal: bool) -> PreparedPrompt {
         PreparedPrompt {

@@ -61,4 +61,6 @@ The resource monitor in the page rail footer reports process and system memory, 
 
 Start with a moderate local quantization. Smaller files usually need less memory, with a possible quality trade-off. A model that fits on disk can still exceed device memory.
 
+If llama.cpp reports a native GGUF or multimodal projector load failure, Koharu retries with fewer GPU layers, keeping the remaining weights in system RAM. Retries halve the layer count, starting with at most 32 layers, and stop at the first successful load; CPU-only loading is the final attempt. During fallback, the multimodal projector and generation cache also use CPU/RAM to leave VRAM for model layers. This is slower and still requires enough system memory. Other loading errors are reported without retrying.
+
 If startup fails, check network access to the package repositories, update the driver, and retry once. Capture the full error if it repeats and follow [troubleshooting](/en/reference/troubleshooting).
